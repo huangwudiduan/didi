@@ -1,0 +1,67 @@
+import torch
+import torch.nn.functional as F
+
+def compute_center(boxes):
+    """ 计算框的中心坐标 """
+    x1, y1, x2, y2 = boxes[..., 0], boxes[..., 1], boxes[..., 2], boxes[..., 3]
+    cx = (x1 + x2) / 2
+    cy = (y1 + y2) / 2
+    return torch.stack([cx, cy], dim=-1)
+
+def ciou_loss(pred, target):
+    """ 计算 CIoU 损失 """
+    pred_cx, pred_cy, pred_w, pred_h = pred[..., 0], pred[..., 1], pred[..., 2], pred[..., 3]
+    target_cx, target_cy, target_w, target_h = target[..., 0], target[..., 1], target[..., 2], target[..., 3]
+
+    # 计算交并比 (IoU)
+    x1 = torch.max(pred_cx - pred_w / 2, target_cx - target_w / 2)
+    y1 = torch.max(pred_cy - pred_h / 2, target_cy - target_h / 2)
+    x2 = torch.min(pred_cx + pred_w / 2, target_cx + target_w / 2)
+    y2 = torch.min(pred_cy + pred_h / 2, target_cy + target_h / 2)
+
+    inter_area = torch.max(x2 - x1, torch.tensor(0.0)) * torch.max(y2 - y1, torch.tensor(0.0))
+    pred_area = pred_w * pred_h
+    target_area = target_w * target_h
+    union_area = pred_area + target_area - inter_area
+    iou = inter_area / union_area
+
+    # 计算中心点距离和长宽比
+    center_distance = (pred_cx - target_cx) ** 2 + (pred_cy - target_cy) ** 2
+    aspect_ratio = 1 - torch.exp(-center_distance / (pred_area + target_area))
+
+    # CIoU 损失
+    loss = 1 - iou + aspect_ratio
+    return loss.mean()
+
+def find_closest_gt(pred_boxes, gt_boxes):
+    """ 找到每个预测框的最近真实框 """
+    pred_center = compute_center(pred_boxes)
+    gt_center = compute_center(gt_boxes)
+    
+    # 计算中心点距离
+    distance = torch.cdist(pred_center, gt_center, p=2)
+    
+    # 为每个预测框找到最近的真实框
+    min_dist, closest_gt_idx = torch.min(distance, dim=1)
+    
+    return closest_gt_idx
+
+def matched_ciou_loss(pred_boxes, gt_boxes):
+    """ 根据匹配结果计算 CIoU 损失 """
+    closest_gt_idx = find_closest_gt(pred_boxes, gt_boxes)
+    
+    # 获取每个预测框对应的真实框
+    matched_gt_boxes = gt_boxes[closest_gt_idx]
+    
+    # 计算 CIoU 损失
+    loss = ciou_loss(pred_boxes, matched_gt_boxes)
+    
+    return loss
+
+# 示例数据
+pred_boxes = torch.tensor([[0.5, 0.5, 0.2, 0.2], [0.6, 0.6, 0.3, 0.3]])
+gt_boxes = torch.tensor([[0.5, 0.5, 0.2, 0.2], [0.7, 0.7, 0.4, 0.4]])
+
+# 计算损失
+loss = matched_ciou_loss(pred_boxes, gt_boxes)
+print("CIoU Loss:", loss.item())
